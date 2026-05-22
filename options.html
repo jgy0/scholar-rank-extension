@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Scholar Rank Filter Options</title>
+    <style>
+      body {
+        max-width: 880px;
+        margin: 24px auto;
+        padding: 0 16px;
+        color: #24292f;
+        font: 14px/1.6 Arial, sans-serif;
+      }
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 260px;
+        padding: 10px;
+        border: 1px solid #d0d7de;
+        border-radius: 6px;
+        font: 13px/1.5 Consolas, monospace;
+      }
+      button {
+        margin: 8px 8px 8px 0;
+        padding: 6px 12px;
+        border: 1px solid #d0d7de;
+        border-radius: 5px;
+        background: #f6f8fa;
+        color: #24292f;
+        cursor: pointer;
+      }
+      .hint {
+        color: #57606a;
+      }
+      .status {
+        min-height: 24px;
+        color: #116329;
+      }
+      code {
+        background: #f6f8fa;
+        padding: 1px 4px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Scholar Rank Filter</h1>
+    <p class="hint">
+      Built-in CCF 2026 records are already enabled. Paste extra JSON records or CSV rows here.
+      CSV columns:
+      <code>venue,abbreviation,aliases,system,rank,score,type,field,note</code>.
+      Separate aliases with <code>|</code>. Higher score means higher priority.
+    </p>
+    <textarea id="records"></textarea>
+    <div>
+      <button id="save">Save</button>
+      <button id="sample">Insert Sample</button>
+      <button id="clear">Clear Extras</button>
+    </div>
+    <p id="status" class="status"></p>
+    <script src="options.js"></script>
+  </body>
+</html>

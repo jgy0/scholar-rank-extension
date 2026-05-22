@@ -1,0 +1,8 @@
+.python-packages/
+publish/
+*.zip
+*.crx
+*.pem
+node_modules/
+.DS_Store
+Thumbs.db

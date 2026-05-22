@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Scholar Rank Filter",
+  "version": "0.1.0",
+  "description": "Annotate, filter, and sort Google Scholar results with built-in CCF 2026 ranking data.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://scholar.google.com/*", "https://scholar.google.com.hk/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://scholar.google.com/*", "https://scholar.google.com.hk/*"],
+      "js": ["data/ccf-2026.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Scholar Rank Filter"
+  }
+}
