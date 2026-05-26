@@ -36,6 +36,20 @@ const DEFAULT_RECORDS = [
 const STORAGE_KEY = "srfRecords";
 const STATE_KEY = "srfState";
 const BUILTIN_RECORDS = Array.isArray(self.SRF_CCF_2026) ? self.SRF_CCF_2026 : [];
+const GENERIC_KEYS = new Set([
+  "acm",
+  "ieee",
+  "ieee acm",
+  "ieee cvf",
+  "springer",
+  "elsevier",
+  "wiley",
+  "usenix",
+  "conference",
+  "journal",
+  "transactions",
+  "proceedings"
+]);
 
 main();
 
@@ -75,10 +89,10 @@ async function loadState() {
 function buildIndex(records) {
   const index = [];
   for (const record of records) {
-    const names = [record.abbreviation, record.venue, ...(record.aliases || [])];
+    const names = expandRecordNames(record);
     for (const name of names) {
       const key = normalize(name);
-      if (!key) continue;
+      if (!isUsableKey(key)) continue;
       index.push({
         key,
         record,
@@ -88,6 +102,37 @@ function buildIndex(records) {
     }
   }
   return index.sort((a, b) => b.weight - a.weight);
+}
+
+function expandRecordNames(record) {
+  const names = [record.abbreviation, record.venue, ...(record.aliases || [])];
+  const venue = normalize(record.venue);
+
+  if (venue.includes("computer vision and pattern recognition")) {
+    names.push(
+      "Computer Vision and Pattern Recognition Conference",
+      "Conference on Computer Vision and Pattern Recognition",
+      "IEEE Conference on Computer Vision and Pattern Recognition",
+      "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
+      "IEEE CVF Conference on Computer Vision and Pattern Recognition",
+      "CVPR Computer Vision and Pattern Recognition"
+    );
+  }
+
+  if (record.abbreviation) {
+    names.push(`${record.venue} ${record.abbreviation}`);
+    names.push(`${record.abbreviation} ${record.venue}`);
+  }
+
+  return [...new Set(names.filter(Boolean))];
+}
+
+function isUsableKey(key) {
+  if (!key || GENERIC_KEYS.has(key)) return false;
+  if (key.length < 3) return false;
+  const parts = key.split(" ");
+  if (parts.length === 1 && key.length < 4) return false;
+  return true;
 }
 
 function annotateItem(item, index, originalIndex) {
