@@ -2,13 +2,22 @@
   "manifest_version": 3,
   "name": "Scholar Rank Filter",
   "version": "0.1.0",
-  "description": "Annotate, filter, and sort Google Scholar results with built-in CCF 2026 ranking data.",
+  "description": "Annotate, filter, and sort Google Scholar results with CCF ranking data.",
   "permissions": ["storage"],
-  "host_permissions": ["https://scholar.google.com/*", "https://scholar.google.com.hk/*"],
+  "host_permissions": ["https://scholar.google.com/*", "https://scholar.google.com.hk/*", "https://dblp.org/*"],
   "content_scripts": [
     {
       "matches": ["https://scholar.google.com/*", "https://scholar.google.com.hk/*"],
-      "js": ["data/ccf-2026.js", "content.js"],
+      "js": [
+        "data/ccfrank/init.js",
+        "data/ccfrank/ccfRankDb.js",
+        "data/ccfrank/ccfRankUrl.js",
+        "data/ccfrank/ccfRankFull.js",
+        "data/ccfrank/ccfRankAbbr.js",
+        "data/ccfrank/ccfFullUrl.js",
+        "data/ccfrank/ccfAbbrFull.js",
+        "content.js"
+      ],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

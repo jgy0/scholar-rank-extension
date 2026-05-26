@@ -1,89 +1,85 @@
-const DEFAULT_RECORDS = [
-  {
-    venue: "IEEE Transactions on Cybernetics",
-    aliases: ["T Cybernetics", "IEEE T Cybernetics"],
-    system: "JCR",
-    rank: "Q1",
-    score: 10,
-    note: "User-editable seed record"
-  },
-  {
-    venue: "Optics Express",
-    aliases: ["OE"],
-    system: "JCR",
-    rank: "Q2",
-    score: 6,
-    note: "Verify with your target ranking year"
-  },
-  {
-    venue: "Optics and Lasers in Engineering",
-    aliases: ["Optics & Lasers in Engineering", "Opt Laser Eng"],
-    system: "JCR",
-    rank: "Q1",
-    score: 8,
-    note: "Verify with your target ranking year"
-  },
-  {
-    venue: "Ocean Engineering",
-    aliases: [],
-    system: "CAS",
-    rank: "Large category 2 / small category 1",
-    score: 7,
-    note: "Often JCR Q1 but not CAS large-category 1"
-  }
-];
-
-const STORAGE_KEY = "srfRecords";
 const STATE_KEY = "srfState";
-const BUILTIN_RECORDS = Array.isArray(self.SRF_CCF_2026) ? self.SRF_CCF_2026 : [];
-const GENERIC_KEYS = new Set([
-  "acm",
-  "ieee",
-  "ieee acm",
-  "ieee cvf",
-  "cvf",
-  "springer",
-  "elsevier",
-  "wiley",
-  "usenix",
-  "computer",
-  "image",
-  "language",
-  "speech",
-  "computer vision",
-  "image processing",
-  "pattern recognition",
-  "conference",
-  "international conference",
-  "journal",
-  "international journal",
-  "transactions",
-  "proceedings",
-  "proceedings of the ieee"
-]);
+const CACHE_PREFIX = "srfDblp:";
+const DBLP_APP_NAME = "ScholarRankExtension";
+const NONE_RANK = "none";
 
 main();
 
 async function main() {
-  const records = await loadRecords();
   const state = await loadState();
+  if (location.pathname === "/citations") {
+    runCitationsPage(state);
+    return;
+  }
+
   const resultList = document.querySelector("#gs_res_ccl_mid");
   if (!resultList) return;
 
   const items = Array.from(resultList.querySelectorAll(".gs_r.gs_or.gs_scl"));
   if (!items.length) return;
 
-  const index = buildIndex(records);
-  const annotated = items.map((item, originalIndex) => annotateItem(item, index, originalIndex));
-
+  const annotated = items.map((item, originalIndex) => createRow(item, originalIndex));
   injectToolbar(resultList, annotated, state);
   applyState(resultList, annotated, state);
+
+  annotated.forEach((row, index) => {
+    setTimeout(() => annotateRow(row, resultList, annotated, state), 120 * index);
+  });
 }
 
-async function loadRecords() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  const userRecords = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
-  return [...BUILTIN_RECORDS, ...DEFAULT_RECORDS, ...userRecords];
+function runCitationsPage(state) {
+  const tableBody = document.querySelector("#gsc_a_b");
+  if (!tableBody) return;
+
+  const annotate = () => {
+    const rows = Array.from(tableBody.querySelectorAll("tr.gsc_a_tr"))
+      .filter((item) => !item.dataset.srfQueued)
+      .map((item, originalIndex) => {
+        item.dataset.srfQueued = "1";
+        return createCitationRow(item, originalIndex);
+      });
+
+    rows.forEach((row, index) => {
+      setTimeout(() => annotateCitationRow(row), 120 * index);
+    });
+  };
+
+  annotate();
+
+  const observer = new MutationObserver(() => annotate());
+  observer.observe(tableBody, { childList: true, subtree: true });
+}
+
+function createCitationRow(item, originalIndex) {
+  const titleNode = item.querySelector("td.gsc_a_t a.gsc_a_at");
+  const metaNodes = item.querySelectorAll("td.gsc_a_t .gs_gray");
+  const authorLine = metaNodes[0]?.textContent || "";
+  const venueLine = metaNodes[1]?.textContent || "";
+  const yearNode = item.querySelector("td.gsc_a_y .gsc_a_h");
+  const title = cleanTitle(titleNode?.textContent || "");
+  const author = extractAuthor(authorLine);
+  const year = extractYear(yearNode?.textContent || venueLine);
+
+  return {
+    item,
+    titleNode,
+    metaNode: metaNodes[1] || metaNodes[0] || titleNode,
+    title,
+    author,
+    year,
+    rankInfo: null,
+    score: 0,
+    originalIndex
+  };
+}
+
+async function annotateCitationRow(row) {
+  if (!row.title || !row.titleNode) return;
+  const rankInfo = await getRankForPaper(row.title, row.author, row.year);
+  row.rankInfo = rankInfo;
+  row.score = rankToScore(rankInfo.rank);
+  renderBadge(row);
+  renderMeta(row);
 }
 
 async function loadState() {
@@ -93,229 +89,247 @@ async function loadState() {
     rank: "all",
     type: "all",
     sortEnabled: false,
+    showNone: true,
     ...stored[STATE_KEY]
   };
 }
 
-function buildIndex(records) {
-  const index = [];
-  for (const record of records) {
-    const names = expandRecordNames(record);
-    for (const name of names) {
-      const key = normalize(name);
-      if (!isUsableKey(key)) continue;
-      index.push({
-        key,
-        record,
-        isShort: isShortKey(key),
-        weight: keyWeight(key, record)
-      });
-    }
-  }
-  return index.sort((a, b) => b.weight - a.weight);
+function createRow(item, originalIndex) {
+  const titleNode = item.querySelector(".gs_rt a") || item.querySelector(".gs_rt");
+  const metaNode = item.querySelector(".gs_a");
+  const title = cleanTitle(titleNode?.textContent || "");
+  const meta = metaNode?.textContent || "";
+  const author = extractAuthor(meta);
+  const year = extractYear(meta);
+
+  return {
+    item,
+    titleNode,
+    metaNode,
+    title,
+    author,
+    year,
+    rankInfo: null,
+    score: 0,
+    originalIndex
+  };
 }
 
-function expandRecordNames(record) {
-  const names = [record.abbreviation, record.venue, ...(record.aliases || [])];
-  const venue = normalize(record.venue);
+async function annotateRow(row, resultList, annotated, state) {
+  if (!row.title || !row.titleNode) return;
 
-  if (venue.includes("computer vision and pattern recognition")) {
-    names.push(
-      "Computer Vision and Pattern Recognition Conference",
-      "Conference on Computer Vision and Pattern Recognition",
-      "IEEE Conference on Computer Vision and Pattern Recognition",
-      "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
-      "IEEE CVF Conference on Computer Vision and Pattern Recognition",
-      "CVPR Computer Vision and Pattern Recognition"
-    );
-  }
-
-  if (record.abbreviation === "IJCV" || venue === "international journal of computer vision") {
-    names.push("International Journal of Computer Vision", "IJCV");
-  }
-
-  if (record.abbreviation) {
-    names.push(`${record.venue} ${record.abbreviation}`);
-    names.push(`${record.abbreviation} ${record.venue}`);
-  }
-
-  return [...new Set(names.filter(Boolean))];
+  const rankInfo = await getRankForPaper(row.title, row.author, row.year);
+  row.rankInfo = rankInfo;
+  row.score = rankToScore(rankInfo.rank);
+  renderBadge(row);
+  renderMeta(row);
+  updateToolbar(annotated);
+  applyState(resultList, annotated, state);
 }
 
-function isUsableKey(key) {
-  if (!key || GENERIC_KEYS.has(key)) return false;
-  if (key.length < 3) return false;
-  const parts = key.split(" ");
-  if (parts.length === 1) {
-    if (key.length < 4) return false;
-    if (!/^[a-z0-9+#-]+$/.test(key)) return false;
-    return key === key.toUpperCase().toLowerCase() || /^[a-z0-9+#-]{4,12}$/.test(key);
+async function getRankForPaper(title, author, year) {
+  const cacheKey = `${CACHE_PREFIX}${normalizeForCache(title)}:${author}:${year}`;
+  const cached = await chrome.storage.local.get(cacheKey);
+  if (cached[cacheKey]) return cached[cacheKey];
+
+  const query = `${title} author:${author || ""}`.trim();
+  const url = `https://dblp.org/search/publ/api?q=${encodeURIComponent(query)}&format=json&app=${DBLP_APP_NAME}`;
+
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    const hit = chooseDblpHit(data?.result?.hits, title, year);
+    const rankInfo = hit ? rankFromDblpHit(hit) : notFoundInfo();
+    await chrome.storage.local.set({ [cacheKey]: rankInfo });
+    return rankInfo;
+  } catch (error) {
+    return {
+      rank: NONE_RANK,
+      score: 0,
+      venue: "DBLP lookup failed",
+      type: "",
+      source: "error",
+      detail: String(error?.message || error)
+    };
   }
-  if (parts.length === 2 && key.length < 12) return false;
-  return true;
 }
 
-function keyWeight(key, record) {
-  const parts = key.split(" ");
-  const typeBoost = record.type === "conference" ? 3 : 0;
-  return key.length + parts.length * 8 + Number(record.score || 0) + typeBoost;
-}
-
-function annotateItem(item, index, originalIndex) {
-  const titleLink = item.querySelector(".gs_rt a") || item.querySelector(".gs_rt");
-  const meta = item.querySelector(".gs_a");
-  const rawText = `${titleLink?.textContent || ""} ${meta?.textContent || ""} ${collectLinkText(item)}`;
-  const haystack = normalize(rawText);
-  const tokens = tokenSet(haystack);
-  const record = findRecord(haystack, tokens, index, item);
-  const score = Number(record?.score || 0);
-
-  item.dataset.srfScore = String(score);
-  item.dataset.srfOriginalIndex = String(originalIndex);
-
-  if (titleLink && record && !item.querySelector(".srf-badge")) {
-    const badge = document.createElement("span");
-    badge.className = `srf-badge ${badgeClass(record, score)}`;
-    badge.textContent = `${record.system || "Rank"}-${record.rank || "?"}`;
-    badge.title = [
-      record.venue,
-      record.type ? `type: ${record.type}` : "",
-      record.field ? `field: ${record.field}` : "",
-      record.note || ""
-    ].filter(Boolean).join("\n");
-    titleLink.insertAdjacentElement("afterend", badge);
-  }
-
-  if (meta && record && !item.querySelector(".srf-meta")) {
-    const note = document.createElement("div");
-    note.className = "srf-meta";
-    note.textContent = `Matched: ${record.venue}; ${record.type || "venue"}; score: ${score}`;
-    meta.insertAdjacentElement("afterend", note);
-  }
-
-  return { item, record, score, originalIndex };
-}
-
-function collectLinkText(item) {
-  return Array.from(item.querySelectorAll("a[href]"))
-    .map((link) => link.href || "")
-    .join(" ");
-}
-
-function findRecord(haystack, tokens, index, item) {
-  const forced = forcedVenueMatch(haystack, item);
-  if (forced) return forced;
+function chooseDblpHit(hits, title, year) {
+  const total = Number(hits?.["@total"] || 0);
+  const hitList = Array.isArray(hits?.hit) ? hits.hit : hits?.hit ? [hits.hit] : [];
+  if (!total || !hitList.length) return null;
 
   let best = null;
-  for (const entry of index) {
-    const matchScore = scoreEntryMatch(entry, haystack, tokens);
-    if (!matchScore) continue;
-    const score = matchScore + entry.weight;
+  for (const hit of hitList) {
+    const info = hit?.info || {};
+    if (info.type === "Informal Publications") continue;
+
+    const hitYear = Number(info.year || 0);
+    const yearDelta = year && hitYear ? Math.abs(Number(year) - hitYear) : 0;
+    if (year && hitYear && yearDelta > 1) continue;
+
+    const titleScore = titleSimilarity(title, info.title || "");
+    const yearScore = year ? Math.max(0, 30 - yearDelta * 20) : 0;
+    const score = titleScore + yearScore;
+
     if (!best || score > best.score) {
-      best = { score, record: entry.record };
+      best = { hit, score };
     }
   }
-  return best?.record || null;
+
+  return best?.score >= 35 ? best.hit : null;
 }
 
-function forcedVenueMatch(haystack, item) {
-  const hrefs = collectLinkText(item).toLowerCase();
-  const combined = `${haystack} ${normalize(hrefs)}`;
-  const title = normalize(item.querySelector(".gs_rt")?.textContent || "");
+function rankFromDblpHit(hit) {
+  const info = hit?.info || {};
+  const recPath = dblpRecPath(info.url || "");
+  const canonicalUrl = self.ccf?.rankDb?.[recPath];
 
-  if (
-    combined.includes("openaccess thecvf com") ||
-    combined.includes("thecvf com") ||
-    combined.includes("content cvpr") ||
-    combined.includes("cvpr") ||
-    combined.includes("conference on computer vision and pattern recognition") ||
-    title.includes("enhancing underwater images and videos by fusion") ||
-    title.includes("toward fast flexible and robust low-light image enhancement")
-  ) {
-    const cvpr = findBuiltinRecord("CVPR", "IEEE/CVF Computer Vision and Pattern Recognition Conference");
-    if (cvpr) return cvpr;
-  }
+  if (canonicalUrl) return rankFromCanonicalUrl(canonicalUrl, "dblp-url", info);
 
-  if (
-    combined.includes("international journal of computer vision") ||
-    combined.includes("link springer com journal 11263") ||
-    combined.includes("springer com journal 11263") ||
-    (
-      combined.includes("international journal of computer") &&
-      combined.includes("springer")
-    ) ||
-    title.includes("benchmarking low-light image enhancement and beyond") ||
-    tokensFromText(combined).has("ijcv")
-  ) {
-    const ijcv = findBuiltinRecord("IJCV", "International Journal of Computer Vision");
-    if (ijcv) return ijcv;
-  }
+  const abbr = typeof info.number !== "undefined" && Number.isNaN(Number(info.number))
+    ? String(info.number)
+    : String(info.venue || "");
+  const byAbbr = rankFromAbbreviation(abbr, info);
+  if (byAbbr.rank !== NONE_RANK) return byAbbr;
 
-  return null;
+  return notFoundInfo(info);
 }
 
-function findBuiltinRecord(abbreviation, venue) {
-  return [...BUILTIN_RECORDS, ...DEFAULT_RECORDS].find((record) => {
-    return record.abbreviation === abbreviation || record.venue === venue;
-  });
+function rankFromCanonicalUrl(canonicalUrl, source, info = {}) {
+  const rank = self.ccf?.rankUrl?.[canonicalUrl] || NONE_RANK;
+  if (rank === NONE_RANK) return notFoundInfo(info);
+
+  const fullName = self.ccf?.rankFullName?.[canonicalUrl] || info.venue || canonicalUrl;
+  const abbreviation = self.ccf?.rankAbbrName?.[canonicalUrl] || "";
+
+  return {
+    rank,
+    score: rankToScore(rank),
+    venue: fullName,
+    abbreviation,
+    type: canonicalUrl.includes("/conf/") ? "conference" : "journal",
+    source,
+    dblpUrl: canonicalUrl
+  };
 }
 
-function scoreEntryMatch(entry, haystack, tokens) {
-  if (entry.isShort) {
-    if (!tokens.has(entry.key)) return 0;
-    if (GENERIC_KEYS.has(entry.key)) return 0;
-    return 80;
-  }
-
-  if (phraseMatches(haystack, entry.key)) {
-    return 120 + entry.key.split(" ").length * 20;
-  }
-
-  return fuzzyVenueScore(entry.key, tokens);
+function rankFromAbbreviation(abbr, info = {}) {
+  const full = self.ccf?.abbrFull?.[String(abbr || "").toUpperCase()];
+  const canonicalUrl = full ? self.ccf?.fullUrl?.[full] : null;
+  if (!canonicalUrl) return notFoundInfo(info);
+  return rankFromCanonicalUrl(canonicalUrl, "dblp-abbr", info);
 }
 
-function fuzzyVenueScore(key, tokens) {
-  const words = key.split(" ").filter((word) => !GENERIC_KEYS.has(word) && word.length > 2);
-  if (words.length < 4) return 0;
-  const matched = words.filter((word) => tokens.has(word)).length;
-  const ratio = matched / words.length;
-  if (matched >= 4 && ratio >= 0.8) return 70 + matched * 8;
-  return 0;
+function notFoundInfo(info = {}) {
+  return {
+    rank: NONE_RANK,
+    score: 0,
+    venue: info.venue || "Not in CCF catalog",
+    type: "",
+    source: "none",
+    dblpUrl: ""
+  };
 }
 
-function normalize(value) {
+function dblpRecPath(url) {
+  const marker = "/rec/";
+  const markerIndex = url.indexOf(marker);
+  if (markerIndex < 0) return "";
+  const rec = url.slice(markerIndex + marker.length);
+  const parts = rec.split("/");
+  if (parts.length < 2) return "";
+  return `/${parts[0]}/${parts[1]}`;
+}
+
+function renderBadge(row) {
+  if (!row.titleNode || row.item.querySelector(".srf-badge")) return;
+
+  const badge = document.createElement("span");
+  badge.className = `srf-badge ${badgeClass(row.rankInfo.rank)}`;
+  badge.textContent = row.rankInfo.rank === NONE_RANK ? "CCF None" : `CCF-${row.rankInfo.rank}`;
+  badge.title = [
+    row.rankInfo.venue,
+    row.rankInfo.abbreviation ? `abbr: ${row.rankInfo.abbreviation}` : "",
+    row.rankInfo.type ? `type: ${row.rankInfo.type}` : "",
+    row.rankInfo.source ? `source: ${row.rankInfo.source}` : ""
+  ].filter(Boolean).join("\n");
+
+  row.titleNode.insertAdjacentElement("afterend", badge);
+}
+
+function renderMeta(row) {
+  if (!row.metaNode || row.item.querySelector(".srf-meta")) return;
+  if (row.rankInfo.rank === NONE_RANK) return;
+
+  const note = document.createElement("div");
+  note.className = "srf-meta";
+  note.textContent = `Matched: ${row.rankInfo.venue}; ${row.rankInfo.type || "venue"}; score: ${row.score}`;
+  row.metaNode.insertAdjacentElement("afterend", note);
+}
+
+function cleanTitle(value) {
   return String(value || "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9\u4e00-\u9fa5+#-]+/g, " ")
+    .replace(/^\[[^\]]+\]\s*/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function tokenSet(value) {
-  return new Set(normalize(value).split(" ").filter(Boolean));
+function extractAuthor(meta) {
+  const authorPart = String(meta || "").split(" - ")[0] || "";
+  const firstAuthor = authorPart.split(",")[0] || authorPart;
+  const tokens = firstAuthor.trim().split(/\s+/).filter(Boolean);
+  return tokens[tokens.length - 1] || "";
 }
 
-function tokensFromText(value) {
-  return tokenSet(value);
+function extractYear(meta) {
+  const match = String(meta || "").match(/\b(19|20)\d{2}\b/);
+  return match ? Number(match[0]) : 0;
 }
 
-function isShortKey(key) {
-  return /^[a-z0-9+#-]{2,18}$/.test(key) || /^[a-z0-9+#-]+ [a-z0-9+#-]+$/.test(key);
+function titleSimilarity(left, right) {
+  const a = significantWords(left);
+  const b = significantWords(right);
+  if (!a.size || !b.size) return 0;
+
+  let matched = 0;
+  for (const word of a) {
+    if (b.has(word)) matched += 1;
+  }
+  return (matched / Math.max(a.size, b.size)) * 100;
 }
 
-function phraseMatches(haystack, key) {
-  return ` ${haystack} `.includes(` ${key} `);
+function significantWords(value) {
+  const stop = new Set(["a", "an", "and", "of", "the", "to", "for", "with", "via", "on", "in", "by"]);
+  return new Set(
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 1 && !stop.has(word))
+  );
 }
 
-function badgeClass(record, score) {
-  if (record?.system === "CCF" && record?.rank === "A") return "srf-ccf-a";
-  if (record?.system === "CCF" && record?.rank === "B") return "srf-ccf-b";
-  if (record?.system === "CCF" && record?.rank === "C") return "srf-ccf-c";
-  if (score >= 8) return "srf-top";
-  if (score >= 5) return "srf-mid";
-  if (score > 0) return "srf-low";
-  return "";
+function normalizeForCache(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+}
+
+function rankToScore(rank) {
+  if (rank === "A") return 10;
+  if (rank === "B") return 8;
+  if (rank === "C") return 5;
+  return 0;
+}
+
+function badgeClass(rank) {
+  if (rank === "A") return "srf-ccf-a";
+  if (rank === "B") return "srf-ccf-b";
+  if (rank === "C") return "srf-ccf-c";
+  return "srf-ccf-none";
 }
 
 function injectToolbar(resultList, annotated, state) {
@@ -339,6 +353,7 @@ function injectToolbar(resultList, annotated, state) {
         <option value="A">A</option>
         <option value="B">B</option>
         <option value="C">C</option>
+        <option value="none">None</option>
       </select>
     </label>
     <label>Type
@@ -353,7 +368,7 @@ function injectToolbar(resultList, annotated, state) {
       Sort by rank
     </label>
     <button type="button" data-srf-options>Import extras</button>
-    <span>${annotated.filter((row) => row.record).length}/${annotated.length} matched</span>
+    <span data-srf-count>${annotated.filter((row) => row.rankInfo && row.rankInfo.rank !== NONE_RANK).length}/${annotated.length} matched</span>
   `;
 
   resultList.insertAdjacentElement("beforebegin", toolbar);
@@ -376,10 +391,21 @@ function injectToolbar(resultList, annotated, state) {
   });
 }
 
+function updateToolbar(annotated) {
+  const count = document.querySelector("[data-srf-count]");
+  if (!count) return;
+  const done = annotated.filter((row) => row.rankInfo).length;
+  const matched = annotated.filter((row) => row.rankInfo && row.rankInfo.rank !== NONE_RANK).length;
+  count.textContent = `${matched}/${annotated.length} matched; ${done}/${annotated.length} checked`;
+}
+
 function applyState(resultList, annotated, state) {
   for (const row of annotated) {
-    const typeBlocked = state.type !== "all" && row.record?.type !== state.type;
-    const rankBlocked = state.rank !== "all" && row.record?.rank !== state.rank;
+    const rankInfo = row.rankInfo;
+    const rank = rankInfo?.rank || NONE_RANK;
+    const type = rankInfo?.type || "";
+    const typeBlocked = state.type !== "all" && type !== state.type;
+    const rankBlocked = state.rank !== "all" && rank !== state.rank;
     const scoreBlocked = row.score < state.minimumScore;
     row.item.classList.toggle("srf-hidden", scoreBlocked || typeBlocked || rankBlocked);
   }

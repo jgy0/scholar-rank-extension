@@ -74,6 +74,13 @@
   font-weight: 600;
 }
 
+.srf-badge.srf-ccf-none {
+  border: 1px solid #6e7781;
+  background: #6e7781;
+  color: #ffffff;
+  font-weight: 700;
+}
+
 .srf-badge.srf-top {
   background: #dafbe1;
   color: #116329;
