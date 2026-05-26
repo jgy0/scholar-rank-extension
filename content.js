@@ -1,5 +1,5 @@
 const STATE_KEY = "srfState";
-const CACHE_PREFIX = "srfDblp:";
+const CACHE_PREFIX = "srfDblp:v2:";
 const DBLP_APP_NAME = "ScholarRankExtension";
 const NONE_RANK = "none";
 
@@ -136,8 +136,7 @@ async function getRankForPaper(title, author, year) {
   const url = `https://dblp.org/search/publ/api?q=${encodeURIComponent(query)}&format=json&app=${DBLP_APP_NAME}`;
 
   try {
-    const response = await fetch(url);
-    const data = await response.json();
+    const data = await fetchJsonViaBackground(url);
     const hit = chooseDblpHit(data?.result?.hits, title, year);
     const rankInfo = hit ? rankFromDblpHit(hit) : notFoundInfo();
     await chrome.storage.local.set({ [cacheKey]: rankInfo });
@@ -152,6 +151,14 @@ async function getRankForPaper(title, author, year) {
       detail: String(error?.message || error)
     };
   }
+}
+
+async function fetchJsonViaBackground(url) {
+  const response = await chrome.runtime.sendMessage({ type: "srfFetchJson", url });
+  if (!response?.ok) {
+    throw new Error(response?.error || "Background fetch failed");
+  }
+  return response.data;
 }
 
 function chooseDblpHit(hits, title, year) {
