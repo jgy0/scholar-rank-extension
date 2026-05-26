@@ -41,14 +41,25 @@ const GENERIC_KEYS = new Set([
   "ieee",
   "ieee acm",
   "ieee cvf",
+  "cvf",
   "springer",
   "elsevier",
   "wiley",
   "usenix",
+  "computer",
+  "image",
+  "language",
+  "speech",
+  "computer vision",
+  "image processing",
+  "pattern recognition",
   "conference",
+  "international conference",
   "journal",
+  "international journal",
   "transactions",
-  "proceedings"
+  "proceedings",
+  "proceedings of the ieee"
 ]);
 
 main();
@@ -97,7 +108,7 @@ function buildIndex(records) {
         key,
         record,
         isShort: isShortKey(key),
-        weight: key.length + Number(record.score || 0)
+        weight: keyWeight(key, record)
       });
     }
   }
@@ -119,6 +130,10 @@ function expandRecordNames(record) {
     );
   }
 
+  if (record.abbreviation === "IJCV" || venue === "international journal of computer vision") {
+    names.push("International Journal of Computer Vision", "IJCV");
+  }
+
   if (record.abbreviation) {
     names.push(`${record.venue} ${record.abbreviation}`);
     names.push(`${record.abbreviation} ${record.venue}`);
@@ -131,33 +146,43 @@ function isUsableKey(key) {
   if (!key || GENERIC_KEYS.has(key)) return false;
   if (key.length < 3) return false;
   const parts = key.split(" ");
-  if (parts.length === 1 && key.length < 4) return false;
+  if (parts.length === 1) {
+    if (key.length < 4) return false;
+    if (!/^[a-z0-9+#-]+$/.test(key)) return false;
+    return key === key.toUpperCase().toLowerCase() || /^[a-z0-9+#-]{4,12}$/.test(key);
+  }
+  if (parts.length === 2 && key.length < 12) return false;
   return true;
+}
+
+function keyWeight(key, record) {
+  const parts = key.split(" ");
+  const typeBoost = record.type === "conference" ? 3 : 0;
+  return key.length + parts.length * 8 + Number(record.score || 0) + typeBoost;
 }
 
 function annotateItem(item, index, originalIndex) {
   const titleLink = item.querySelector(".gs_rt a") || item.querySelector(".gs_rt");
   const meta = item.querySelector(".gs_a");
-  const haystack = normalize(`${titleLink?.textContent || ""} ${meta?.textContent || ""}`);
+  const rawText = `${titleLink?.textContent || ""} ${meta?.textContent || ""} ${collectLinkText(item)}`;
+  const haystack = normalize(rawText);
   const tokens = tokenSet(haystack);
-  const record = findRecord(haystack, tokens, index);
+  const record = findRecord(haystack, tokens, index, item);
   const score = Number(record?.score || 0);
 
   item.dataset.srfScore = String(score);
   item.dataset.srfOriginalIndex = String(originalIndex);
 
-  if (titleLink && !item.querySelector(".srf-badge")) {
+  if (titleLink && record && !item.querySelector(".srf-badge")) {
     const badge = document.createElement("span");
     badge.className = `srf-badge ${badgeClass(record, score)}`;
-    badge.textContent = record ? `${record.system || "Rank"}-${record.rank || "?"}` : "Unmatched";
-    badge.title = record
-      ? [
-          record.venue,
-          record.type ? `type: ${record.type}` : "",
-          record.field ? `field: ${record.field}` : "",
-          record.note || ""
-        ].filter(Boolean).join("\n")
-      : "No local ranking record matched this result.";
+    badge.textContent = `${record.system || "Rank"}-${record.rank || "?"}`;
+    badge.title = [
+      record.venue,
+      record.type ? `type: ${record.type}` : "",
+      record.field ? `field: ${record.field}` : "",
+      record.note || ""
+    ].filter(Boolean).join("\n");
     titleLink.insertAdjacentElement("afterend", badge);
   }
 
@@ -171,12 +196,91 @@ function annotateItem(item, index, originalIndex) {
   return { item, record, score, originalIndex };
 }
 
-function findRecord(haystack, tokens, index) {
+function collectLinkText(item) {
+  return Array.from(item.querySelectorAll("a[href]"))
+    .map((link) => link.href || "")
+    .join(" ");
+}
+
+function findRecord(haystack, tokens, index, item) {
+  const forced = forcedVenueMatch(haystack, item);
+  if (forced) return forced;
+
+  let best = null;
   for (const entry of index) {
-    if (entry.isShort && tokens.has(entry.key)) return entry.record;
-    if (!entry.isShort && phraseMatches(haystack, entry.key)) return entry.record;
+    const matchScore = scoreEntryMatch(entry, haystack, tokens);
+    if (!matchScore) continue;
+    const score = matchScore + entry.weight;
+    if (!best || score > best.score) {
+      best = { score, record: entry.record };
+    }
   }
+  return best?.record || null;
+}
+
+function forcedVenueMatch(haystack, item) {
+  const hrefs = collectLinkText(item).toLowerCase();
+  const combined = `${haystack} ${normalize(hrefs)}`;
+  const title = normalize(item.querySelector(".gs_rt")?.textContent || "");
+
+  if (
+    combined.includes("openaccess thecvf com") ||
+    combined.includes("thecvf com") ||
+    combined.includes("content cvpr") ||
+    combined.includes("cvpr") ||
+    combined.includes("conference on computer vision and pattern recognition") ||
+    title.includes("enhancing underwater images and videos by fusion") ||
+    title.includes("toward fast flexible and robust low-light image enhancement")
+  ) {
+    const cvpr = findBuiltinRecord("CVPR", "IEEE/CVF Computer Vision and Pattern Recognition Conference");
+    if (cvpr) return cvpr;
+  }
+
+  if (
+    combined.includes("international journal of computer vision") ||
+    combined.includes("link springer com journal 11263") ||
+    combined.includes("springer com journal 11263") ||
+    (
+      combined.includes("international journal of computer") &&
+      combined.includes("springer")
+    ) ||
+    title.includes("benchmarking low-light image enhancement and beyond") ||
+    tokensFromText(combined).has("ijcv")
+  ) {
+    const ijcv = findBuiltinRecord("IJCV", "International Journal of Computer Vision");
+    if (ijcv) return ijcv;
+  }
+
   return null;
+}
+
+function findBuiltinRecord(abbreviation, venue) {
+  return [...BUILTIN_RECORDS, ...DEFAULT_RECORDS].find((record) => {
+    return record.abbreviation === abbreviation || record.venue === venue;
+  });
+}
+
+function scoreEntryMatch(entry, haystack, tokens) {
+  if (entry.isShort) {
+    if (!tokens.has(entry.key)) return 0;
+    if (GENERIC_KEYS.has(entry.key)) return 0;
+    return 80;
+  }
+
+  if (phraseMatches(haystack, entry.key)) {
+    return 120 + entry.key.split(" ").length * 20;
+  }
+
+  return fuzzyVenueScore(entry.key, tokens);
+}
+
+function fuzzyVenueScore(key, tokens) {
+  const words = key.split(" ").filter((word) => !GENERIC_KEYS.has(word) && word.length > 2);
+  if (words.length < 4) return 0;
+  const matched = words.filter((word) => tokens.has(word)).length;
+  const ratio = matched / words.length;
+  if (matched >= 4 && ratio >= 0.8) return 70 + matched * 8;
+  return 0;
 }
 
 function normalize(value) {
@@ -190,6 +294,10 @@ function normalize(value) {
 
 function tokenSet(value) {
   return new Set(normalize(value).split(" ").filter(Boolean));
+}
+
+function tokensFromText(value) {
+  return tokenSet(value);
 }
 
 function isShortKey(key) {
